@@ -5,6 +5,7 @@
 ║  Nền tảng hỗ trợ:                                                           ║
 ║    1. VietnamWorks.com                                                      ║
 ║    2. TopCV.vn                                                              ║
+║    3. CareerViet.vn                                                         ║
 ║  Tác giả: Senior Data Engineer & Web Scraping Specialist                   ║
 ║  Công nghệ: Python + Playwright (async) + BeautifulSoup4 + pandas          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -16,8 +17,8 @@ Cách chạy:
   ▸ Thu thập đầy đủ (headless, 1200 tin, ghi tiếp nối vào raw_jobs_data.csv):
       python scraper.py --full --target 1200
 
-  ▸ Chỉ định nền tảng cần cào (VietnamWorks trước, sau đó TopCV):
-      python scraper.py --full --target 800 --platforms vietnamworks,topcv
+  ▸ Chỉ định nền tảng cần cào (VietnamWorks -> TopCV -> CareerViet):
+      python scraper.py --full --target 800 --platforms vietnamworks,topcv,careerviet
 
   ▸ Tùy chỉnh từ khóa:
       python scraper.py --full --target 500 --keywords "Data Analyst,AI Engineer,Data Science"
@@ -55,6 +56,7 @@ DEFAULT_KEYWORDS: list[str] = [
 SUPPORTED_PLATFORMS = [
     "vietnamworks",
     "topcv",
+    "careerviet",
 ]
 
 OUTPUT_DIR       = Path(__file__).parent
@@ -144,6 +146,7 @@ def new_record(platform: str = "", keyword: str = "") -> dict:
 JUNK_TITLE_KEYWORDS = [
     "topcv.vn",
     "vietnamworks.com",
+    "careerviet.vn",
     "nha khoa",
     "nước thải",
     "hải quan",
@@ -1081,6 +1084,338 @@ class VietnamWorksScraper(BaseScraper):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  3. CareerViet.vn SCRAPER (formerly CareerBuilder Vietnam)
+# ═══════════════════════════════════════════════════════════════════════════════
+class CareerVietScraper(BaseScraper):
+    PLATFORM = "CareerViet"
+    BASE     = "https://careerviet.vn"
+
+    @staticmethod
+    def keyword_to_slug(keyword: str) -> str:
+        """Chuyển đổi từ khóa thành slug URL của CareerViet (ví dụ: 'Data Analyst' -> 'Data-Analyst')."""
+        clean_kw = re.sub(r"[^\w\s\+\#]", " ", keyword).strip()
+        slug = re.sub(r"[\s\+\#]+", "-", clean_kw).strip("-")
+        return slug or "Data"
+
+    @staticmethod
+    def search_url(keyword: str, page: int) -> str:
+        slug = CareerVietScraper.keyword_to_slug(keyword)
+        if page == 1:
+            return f"https://careerviet.vn/viec-lam/{slug}-k-vi.html"
+        return f"https://careerviet.vn/viec-lam/{slug}-k-trang-{page}-vi.html"
+
+    async def _collect_cards(self, keyword: str, page: int) -> list[dict]:
+        """Thu thập danh sách job card từ trang tìm kiếm của CareerViet (Hybrid Card Extraction)."""
+        url = self.search_url(keyword, page)
+        log.info("[CareerViet] KW='%s' trang %d → %s", keyword, page, url)
+        try:
+            await self.page.goto(url, timeout=NAV_TIMEOUT, wait_until="domcontentloaded")
+            await human_delay(1.5, 2.5)
+        except Exception as e:
+            log.warning("[CareerViet] ✗ Lỗi tải search: %s", e)
+            return []
+
+        # Chờ container danh sách việc làm
+        try:
+            await self.page.wait_for_selector(".job-item, .jobs-side-list, .figure", timeout=6000)
+        except Exception:
+            pass
+
+        # Cuộn chuột để nạp đầy đủ nội dung
+        try:
+            for _ in range(5):
+                await self.page.mouse.wheel(0, 1000)
+                await asyncio.sleep(0.3)
+            await human_delay(1.0, 1.5)
+        except Exception:
+            pass
+
+        html = await self.page.content()
+        soup = BeautifulSoup(html, "lxml")
+        cards: list[dict] = []
+        seen_card_urls: set[str] = set()
+
+        for item in soup.select(".job-item, .jobs-side-list .job-item, div[class*='job-item']"):
+            try:
+                # Link và Tiêu đề
+                title_elem = item.select_one(".title a, .job-title a, h2 a, h3 a, a[href*='/tim-viec-lam/']")
+                if not title_elem:
+                    continue
+                href = title_elem.get("href", "")
+                if not href or ("/tim-viec-lam/" not in href and not href.endswith(".html")):
+                    continue
+
+                full_url = href if href.startswith("http") else urljoin(self.BASE, href)
+                clean_url = full_url.split("?")[0].strip()
+
+                if clean_url in seen_card_urls or self.store.is_known_url(clean_url):
+                    continue
+
+                seen_card_urls.add(clean_url)
+                title = clean(title_elem.get("title") or title_elem.get_text())
+
+                # Tên công ty
+                comp_elem = item.select_one(".company-name a, .company-name, .employer-name, a[href*='/nha-tuyen-dung/']")
+                company = clean(comp_elem.get_text()) if comp_elem else ""
+
+                # Mức lương
+                salary_elem = item.select_one(".salary, [class*='salary']")
+                salary = clean(salary_elem.get_text()) if salary_elem else "Thương lượng"
+
+                # Địa điểm
+                loc_elem = item.select_one(".location, [class*='location']")
+                location = clean(loc_elem.get_text()) if loc_elem else "Việt Nam"
+
+                # Kinh nghiệm / Phúc lợi
+                exp_elem = item.select_one(".welfare, [class*='experience'], .date")
+                experience = clean(exp_elem.get_text()) if exp_elem else ""
+
+                if title:
+                    cards.append({
+                        "url": clean_url,
+                        "title": title,
+                        "company": company,
+                        "salary": salary,
+                        "location": location,
+                        "experience": experience,
+                    })
+            except Exception:
+                continue
+
+        log.info("[CareerViet]   → %d link việc làm mới", len(cards))
+        return cards
+
+    async def _extract_detail(self, url: str, keyword: str) -> Optional[dict]:
+        """Cào chi tiết JD trên tab riêng của CareerViet."""
+        html = await self.fetch_detail_page_html(url)
+        if not html:
+            return None
+
+        soup = BeautifulSoup(html, "lxml")
+        rec = new_record(self.PLATFORM, keyword)
+        rec["job_url"] = url
+
+        try:
+            # 1. Tiêu đề công việc
+            h1 = soup.select_one("h1.title, h1, .job-detail-head h1, .heading-title h1")
+            rec["job_title"] = clean(h1.get_text()) if h1 else ""
+
+            # 2. Tên công ty
+            for sel in [
+                ".company-name a",
+                ".company-name",
+                ".job-detail-head .company-name",
+                ".employer-name",
+                "a[href*='/nha-tuyen-dung/']",
+                "[class*='company-title']",
+            ]:
+                el = soup.select_one(sel)
+                if el and clean(el.get_text()) and len(clean(el.get_text())) >= 2:
+                    c_text = clean(el.get_text())
+                    if "careerviet" not in c_text.lower():
+                        rec["company_name"] = c_text
+                        break
+
+            # Fallback lấy tên công ty từ <title> nếu DOM không có
+            page_title = soup.select_one("title")
+            raw_title = clean(page_title.get_text()) if page_title else ""
+            if not rec["company_name"] and raw_title:
+                comp_match = re.search(r"(?:tại|at)\s+(.+?)(?:\s*\|\s*CareerViet|$)", raw_title, re.IGNORECASE)
+                if comp_match:
+                    rec["company_name"] = clean(comp_match.group(1))
+
+            body_text = soup.get_text()
+
+            # 3. Mức lương
+            sal_elem = soup.select_one(".box-summary .item:has(.fa-dollar-sign) .text, .detail-box .salary, [class*='salary']")
+            if sal_elem and clean(sal_elem.get_text()):
+                rec["salary_raw"] = clean(sal_elem.get_text())
+            else:
+                sal_match = re.search(r"(Cạnh tranh|Thương lượng|\$[\d,]+\s*-\s*\$[\d,]+|\d+[\s,]*-[\s,]*\d+\s*(?:triệu|USD))", body_text, re.IGNORECASE)
+                rec["salary_raw"] = clean(sal_match.group(0)) if sal_match else "Thương lượng"
+
+            # 4. Địa điểm
+            loc_elem = soup.select_one(".box-summary .item:has(.fa-map-marker-alt) .text, .detail-box .location, [class*='location']")
+            if loc_elem and clean(loc_elem.get_text()):
+                rec["location"] = clean(loc_elem.get_text())
+            else:
+                loc_match = re.search(r"(Hà Nội|Hồ Chí Minh|Đà Nẵng|Bình Dương|Cần Thơ|Hải Phòng)", body_text, re.IGNORECASE)
+                rec["location"] = loc_match.group(1) if loc_match else "Việt Nam"
+
+            # 5. Kinh nghiệm
+            exp_elem = soup.select_one(".box-summary .item:has(.fa-briefcase) .text, .detail-box .experience, [class*='experience']")
+            if exp_elem and clean(exp_elem.get_text()):
+                rec["experience_required"] = clean(exp_elem.get_text())
+            else:
+                exp_match = re.search(r"(\d+\s*-\s*\d+\s*năm|\d+\+?\s*năm|Fresher|Junior|Senior)", body_text, re.IGNORECASE)
+                rec["experience_required"] = exp_match.group(0) if exp_match else ""
+
+            # 6. Mô tả công việc, Yêu cầu và Quyền lợi
+            desc_parts = []
+            req_parts = []
+
+            for row in soup.select(".detail-row, .job-detail-content .detail-box, section"):
+                h_el = row.select_one("h2, h3, .job-detail-title, .detail-title")
+                h_text = clean(h_el.get_text()).lower() if h_el else ""
+                content_el = row.select_one(".content-tab, .detail-content, .welfare-list") or row
+                c_text = clean(content_el.get_text())
+                if not c_text or len(c_text) < 20:
+                    continue
+
+                if any(k in h_text for k in ["mô tả", "trách nhiệm", "description"]):
+                    desc_parts.append(c_text)
+                elif any(k in h_text for k in ["yêu cầu", "kỹ năng", "requirement"]):
+                    req_parts.append(c_text)
+                elif any(k in h_text for k in ["quyền lợi", "phúc lợi", "benefit"]):
+                    req_parts.append(c_text)
+
+            if desc_parts:
+                rec["job_description"] = " ".join(desc_parts)[:3000]
+            if req_parts:
+                rec["requirements_and_benefits"] = " ".join(req_parts)[:3000]
+
+            if not rec["job_description"]:
+                main_content = soup.select_one("main, [role='main'], body")
+                rec["job_description"] = clean(main_content.get_text())[:3000] if main_content else ""
+
+        except Exception as e:
+            log.warning("[CareerViet] ✗ Lỗi trích xuất %s: %s", url, e)
+            return None
+
+        if not is_valid_record(rec):
+            log.debug("[CareerViet] ✗ Bỏ qua tin không hợp lệ: title='%s', company='%s'", rec["job_title"], rec["company_name"])
+            return None
+        return rec
+
+    async def _has_next_page(self, current_page: int) -> bool:
+        """Kiểm tra xem CareerViet còn trang tiếp theo để cào không."""
+        try:
+            return await self.page.evaluate(r"""(cur) => {
+                const nextBtn = document.querySelector('.pagination .next:not(.disabled), [class*="pagination"] [class*="next"]:not([class*="disabled"]), a[rel="next"]');
+                if (nextBtn) return true;
+
+                const elements = document.querySelectorAll('.pagination a, .pagination li, [class*="pagination"] *');
+                for (const el of elements) {
+                    const txt = el.innerText ? el.innerText.trim() : '';
+                    if (/^\d+$/.test(txt)) {
+                        const num = parseInt(txt, 10);
+                        if (num > cur) return true;
+                    }
+                }
+                const paginationEl = document.querySelector('.pagination, [class*="pagination"]');
+                if (paginationEl && paginationEl.innerText.includes('...')) {
+                    return true;
+                }
+                return false;
+            }""", current_page)
+        except Exception:
+            return True
+
+    async def _get_total_pages(self) -> int:
+        """Đọc tổng số trang hoặc tổng số việc làm từ CareerViet."""
+        try:
+            total = await self.page.evaluate(r"""() => {
+                const bodyText = document.body ? document.body.innerText : '';
+                const mTotal = bodyText.match(/(\d+[\d,.]*)\s+việc làm/i);
+                if (mTotal) {
+                    const totalJobs = parseInt(mTotal[1].replace(/[^\d]/g, ''), 10);
+                    if (totalJobs > 0) {
+                        return Math.max(1, Math.ceil(totalJobs / 20));
+                    }
+                }
+                const pageNums = [];
+                const elements = document.querySelectorAll('.pagination a, .pagination li, [class*="pagination"] *');
+                for (const el of elements) {
+                    const txt = el.innerText ? el.innerText.trim() : '';
+                    if (/^\d+$/.test(txt)) {
+                        pageNums.push(parseInt(txt, 10));
+                    }
+                }
+                return pageNums.length > 0 ? Math.max(...pageNums) : 1;
+            }""")
+            return max(1, total)
+        except Exception:
+            return 1
+
+    async def scrape_keyword(self, keyword: str, target: int) -> int:
+        added = 0
+        consecutive_empty_pages = 0
+        est_pages = None
+
+        for page_num in range(1, self.max_pages + 1):
+            if self.store.count >= target:
+                log.info("[CareerViet] 🎯 Đạt mục tiêu %d", target)
+                break
+
+            cards = await self._collect_cards(keyword, page_num)
+            if not cards:
+                log.info("[CareerViet] Hết kết quả '%s' tại trang %d", keyword, page_num)
+                break
+
+            if est_pages is None:
+                est_pages = await self._get_total_pages()
+                log.info("[CareerViet] 📄 Từ khóa '%s' ước lượng khoảng %d trang kết quả", keyword, est_pages)
+
+            page_added = 0
+            for card in cards:
+                if self.store.count >= target:
+                    return added
+
+                link = card["url"]
+                self.store.mark_seen(link)
+
+                rec = new_record(self.PLATFORM, keyword)
+                rec["job_url"] = link
+                rec["job_title"] = clean(card.get("title", ""))
+                rec["company_name"] = clean(card.get("company", ""))
+                rec["salary_raw"] = clean(card.get("salary", "Thương lượng"))
+                rec["location"] = clean(card.get("location", "Việt Nam"))
+                rec["experience_required"] = clean(card.get("experience", ""))
+
+                detail_rec = await self._extract_detail(link, keyword)
+                if detail_rec:
+                    if detail_rec.get("job_title"):
+                        rec["job_title"] = detail_rec["job_title"]
+                    if detail_rec.get("company_name"):
+                        rec["company_name"] = detail_rec["company_name"]
+                    if detail_rec.get("salary_raw"):
+                        rec["salary_raw"] = detail_rec["salary_raw"]
+                    if detail_rec.get("location"):
+                        rec["location"] = detail_rec["location"]
+                    rec["job_description"] = detail_rec.get("job_description", "")
+                    rec["requirements_and_benefits"] = detail_rec.get("requirements_and_benefits", "")
+                else:
+                    if not rec.get("job_description"):
+                        rec["job_description"] = f"Tuyển dụng {rec['job_title']} tại {rec['company_name']}. Địa điểm: {rec['location']}. Mức lương: {rec['salary_raw']}."
+
+                if is_valid_record(rec) and self.store.add(rec):
+                    added += 1
+                    page_added += 1
+                    log.info("[CareerViet] ✓ #%d │ %s │ %s", self.store.count, rec["job_title"][:50], rec["company_name"][:30])
+
+                await human_delay(2.0, 3.5)
+
+            self.store.save_incremental()
+
+            has_next = await self._has_next_page(page_num)
+            if not has_next and est_pages and page_num >= est_pages:
+                log.info("[CareerViet] 🏁 Đã đến trang cuối cùng (%d trang) cho từ khóa '%s'. Chuyển từ khóa tiếp theo!", page_num, keyword)
+                break
+
+            if page_added == 0:
+                consecutive_empty_pages += 1
+                if consecutive_empty_pages >= 2:
+                    log.info("[CareerViet] ⏹ 2 trang liên tiếp không có thêm tin mới nào cho '%s'. Tự động chuyển từ khóa tiếp theo!", keyword)
+                    break
+            else:
+                consecutive_empty_pages = 0
+
+            await human_delay(2.5, 4.0)
+
+        return added
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  CLI & MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 def parse_args() -> argparse.Namespace:
@@ -1193,10 +1528,11 @@ async def main():
 
         search_page = await context.new_page()
 
-        # Ánh xạ class scraper (VietnamWorks chạy trước TopCV)
+        # Ánh xạ class scraper (VietnamWorks -> TopCV -> CareerViet)
         scraper_classes = {
             "vietnamworks": VietnamWorksScraper,
             "topcv": TopCVScraper,
+            "careerviet": CareerVietScraper,
         }
 
         for plat_name in selected_platforms:

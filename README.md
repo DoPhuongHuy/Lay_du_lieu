@@ -2,9 +2,10 @@
 
 Công cụ thu thập dữ liệu tuyển dụng tự động đa nền tảng tại Việt Nam, phục vụ nghiên cứu và phân tích thị trường lao động phân khúc Công nghệ thông tin (Data Science, AI, Backend, Frontend, DevOps, Tester...).
 
-## 🌐 Các nền tảng hỗ trợ (2 nền tảng)
+## 🌐 Các nền tảng hỗ trợ (3 nền tảng)
 1. **VietnamWorks.com**
 2. **TopCV.vn**
+3. **CareerViet.vn**
 
 ---
 
@@ -27,8 +28,8 @@ playwright install chromium
 # Cào đầy đủ tất cả nền tảng với mục tiêu 1200 tin:
 python scraper.py --full --target 1200
 
-# Chỉ cào trên nền tảng mong muốn (ví dụ: VietnamWorks hoặc TopCV):
-python scraper.py --full --target 800 --platforms vietnamworks,topcv
+# Chỉ cào trên nền tảng mong muốn (ví dụ: VietnamWorks, TopCV hoặc CareerViet):
+python scraper.py --full --target 800 --platforms vietnamworks,topcv,careerviet
 
 # Tùy biến từ khóa tìm kiếm:
 python scraper.py --full --target 500 --keywords "AI Engineer,Data Science,Python"
@@ -37,7 +38,7 @@ python scraper.py --full --target 500 --keywords "AI Engineer,Data Science,Pytho
 ### 2. Chế độ Demo (Hiện trình duyệt kiểm chứng trực quan)
 ```bash
 # Mở trình duyệt trực quan, tự động gõ từ khóa vào ô search & bấm nút tìm kiếm:
-python scraper.py --demo --max-pages 1 --keywords "Data Science,Python" --platforms topcv,vietnamworks
+python scraper.py --demo --max-pages 1 --keywords "Data Science,Python" --platforms vietnamworks,topcv,careerviet
 ```
 
 ### 3. Cào mới hoàn toàn từ đầu (Làm rỗng file dữ liệu)
@@ -53,7 +54,7 @@ python scraper.py --full --target 1200 --clean-start
 | `--demo` | Chế độ demo (Headless = False), hiển thị cửa sổ trình duyệt | — |
 | `--target N` | Mục tiêu số lượng tin tuyển dụng cần đạt được | `1000` |
 | `--max-pages N` | Số trang tối đa mỗi từ khóa trên từng trang | `30` |
-| `--platforms list` | Danh sách nền tảng (`topcv,vietnamworks`) | Cào tất cả |
+| `--platforms list` | Danh sách nền tảng (`vietnamworks,topcv,careerviet`) | Cào tất cả theo thứ tự |
 | `--keywords list` | Bộ từ khóa tìm kiếm tùy chỉnh, phân cách bởi dấu phẩy | Bộ IT/Data mặc định |
 | `--clean-start` | Xóa dữ liệu cũ / checkpoint, cào lại từ đầu | Tiếp nối dữ liệu cũ |
 
